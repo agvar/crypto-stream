@@ -10,7 +10,7 @@ class BaseService(BaseComponent):
         self.api_key = self.config.get('api_key')
 
     def _send_request(self):
-        headers = 
+        headers = {'Authorization':f'Bearer{self.api_key}'}
 
     def run(self):
         pass
