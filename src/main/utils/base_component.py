@@ -2,22 +2,23 @@ import logging
 from configparser import ConfigParser
 from abc import ABC,abstractmethod
 from dataclasses import dataclass    
+from typing import Dict
 
 class BaseComponent(ABC):
     logger = logging.getLogger(__name__)
 
     def __init__(self,config_file:str,section_name:str):
-        self.setup_logging()
-        self._read_config(config_file,section_name)
+        self._setup_logging()
+        self.config = self._read_config(config_file,section_name)
 
     def _setup_logging(self):
         self.logger.setLevel("INFO")
-        formatter = logging.Formatter(format="%(asctime)s - %(levelname)s- %(message)s",style='%')
+        formatter = logging.Formatter("%(asctime)s - %(levelname)s- %(message)s",style='%')
         handler = logging.FileHandler("crypto_stream.log")
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
     
-    def _read_config(self,config_file:str,section_name:str) -> dict :
+    def _read_config(self,config_file:str,section_name:str) -> Dict :
         config = ConfigParser()
         config.read(config_file)
         try:
