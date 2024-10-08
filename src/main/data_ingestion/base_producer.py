@@ -1,13 +1,16 @@
 from utils.base_component import BaseComponent
+from utils.aws_connector import AWSConnector
 import requests
 import os
 from dotenv import load_dotenv
 from typing import Dict
 
 
-class BaseService(BaseComponent):
-    def __init__(self,config,section_name):
+class BaseProducer(BaseComponent):
+    def __init__(self,config,section_name,aws_section):
         super().__init__(config,section_name)
+        aws_section = self.read_config(config,aws_section)
+        self.aws_connector = AWSConnector(self.logger,aws_section)
         
     def initialize(self):
         load_dotenv()
@@ -27,6 +30,8 @@ class BaseService(BaseComponent):
             self.logger.exception(e,exc_info=True)
             raise Exception(f'error:{e}')
 
+    def push_to_queue(self,data):
+        self.aws_connector.write_to_kinesis_stream(data)
 
     def run(self):
        self.initialize()

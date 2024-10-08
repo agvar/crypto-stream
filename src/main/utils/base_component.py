@@ -18,7 +18,7 @@ class BaseComponent(ABC):
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
     
-    def _read_config(self,config_file:str,section_name:str) -> Dict :
+    def read_config(self,config_file:str,section_name:str) -> Dict :
         config = ConfigParser()
         config.read(config_file)
         try:
