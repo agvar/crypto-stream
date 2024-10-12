@@ -4,6 +4,7 @@ import requests
 import os
 from dotenv import load_dotenv
 from typing import Dict
+import json
 
 
 class BaseProducer(BaseComponent):
@@ -29,10 +30,13 @@ class BaseProducer(BaseComponent):
         except Exception as e:
             self.logger.exception(e,exc_info=True)
             raise Exception(f'error:{e}')
-
-    def push_to_queue(self,data):
-        self.aws_connector.write_to_kinesis_stream(data)
+        
+    def write_to_stream(self,dataset):
+        records = [{'Data': json.dumps(record | {'Timestamp':dataset['timestamp']}).encode('utf-8'),
+                    'PartitionKey': record['id']} for record in dataset['data']]
+        self.aws_connector.write_to_kinesis_stream(records)
 
     def run(self):
        self.initialize()
-       response = self._request_response()
+       dataset = self._request_response()
+       self.write_to_stream(dataset)

@@ -1,8 +1,9 @@
-from main.data_ingestion.base_producer import BaseProducer
+from data_ingestion.base_producer import BaseProducer
 
 def main():
-    api_service = BaseProducer('config.ini','api')
-    api_service.run()
+    producer = BaseProducer('config.ini','api','aws')
+    response = producer.run()
+    print(response)
 
 if __name__=="__main__":
     main()

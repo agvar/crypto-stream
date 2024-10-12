@@ -1,13 +1,13 @@
+import sys
 import boto3
-from boto3 import NoCredentialsError,PartialCredentials
+from botocore.exceptions import NoCredentialsError,PartialCredentialsError
 from botocore.exceptions import ClientError
-
 class AWSConnector():
     def __init__(self,logger,aws_section):
         self.logger = logger
         self.section = aws_section
         self.region = self.section['region']
-        self.session = boto3.Session(self.region)
+        self.session = boto3.Session()
 
     def get_s3_client(self):
         return self.session.client('s3')
@@ -15,22 +15,28 @@ class AWSConnector():
     def get_kinesis_client(self):
         return self.session.client('kinesis')
     
-    def get_kinesis_stream(self,kinesis_client,stream,shard_count,region):
+    def get_kinesis_stream(self,kinesis_client,stream,shard_count):
         try:
-            response = kinesis_client.describe_stream(StreamName=stream)
+            kinesis_client.describe_stream(StreamName='cryptostream')
+            self.logger.info(f'{stream} found. Proceeding to next step')
             return True
-        except kinesis_client.exceptions.resourceNotFoundException:
+        except kinesis_client.exceptions.ResourceNotFoundException:
             self.logger.info(f'{stream} not found. Proceeding to create')
+        except Exception as e:
+            self.logger.error(e,exc_info=True)
+            sys.exit(1)
+
         try:
             kinesis_client.create_stream(
                 StreamName = stream,
-                ShardCount = shard_count,
-                Region = region
+                ShardCount = shard_count
             )
+            self.logger.info(f'Kinesis stream : {stream} created in {self.region}')
+            return True
         except ClientError as e:
             self.logger.error(e,exc_info=True)
             return None
-    
+               
     def read_from_s3(self,bucket,prefix,key):
         try:
             s3_client =  self.get_s3_client()
@@ -44,11 +50,11 @@ class AWSConnector():
         except NoCredentialsError as e:
             self.logger.error(e,exc_info=True)
             return None
-        except PartialCredentials as e :
+        except PartialCredentialsError as e :
             self.logger.error(e,exc_info=True)
             return None
         except Exception as e:
-            self.logger(e,exc_info=True)
+            self.logger.error(e,exc_info=True)
             return None
     
     def write_to_s3(self,bucket,prefix,key,data):
@@ -60,61 +66,68 @@ class AWSConnector():
         except NoCredentialsError as e:
             self.logger.error(e,exc_info=True)
             return None
-        except PartialCredentials as e :
+        except PartialCredentialsError as e :
             self.logger.error(e,exc_info=True)
             return None
         except Exception as e:
-            self.logger(e,exc_info=True)
+            self.logger.error(e,exc_info=True)
             return None
         
     def write_to_kinesis_stream(self,data):
         try:
             kinesis_client = self.get_kinesis_client()
+            self.logger.info(f'Created kinesis client :{kinesis_client}')
             stream = self.section['stream']
-            shard_count = self.section['shard_count']
-            partition_key = data[self.section['partition_key']]
+            shard_count = int(self.section['shard_count'])
+            partition_key = self.section['partition_key']
+            self.logger.info(f'stream:{stream},shard_count:{shard_count} partition_key:{partition_key}')
 
-            if self.get_kinesis_stream(kinesis_client,stream,shard_count,self.region):
-                kinesis_client.put_record(
-                    StreamName = stream,
-                    Data = data if isinstance(data,bytes) else data.encode('utf-8'),
-                    PartitionKey= partition_key
-                )
-            else:
-                self.logger.error(f'Unable to create stream {stream}}',exc_info=True)
-                return None
+            if self.get_kinesis_stream(kinesis_client,stream,shard_count):
+                response = kinesis_client.put_records(
+                                StreamName = stream,
+                                Records = data
+                            )
+                self.logger.info(f'Data written to stream {stream} :{response}')
+         
         except NoCredentialsError as e:
             self.logger.error(e,exc_info=True)
             return None
-        except PartialCredentials as e :
+        except PartialCredentialsError as e :
             self.logger.error(e,exc_info=True)
             return None
         except Exception as e:
-            self.logger(e,exc_info=True)
+            self.logger.error(e,exc_info=True)
             return None 
 
     def read_from_kinesis_stream(self,stream,shard_id,iterator_type='LATEST'):
         try:
             kinesis_client = self.get_kinesis_client()
-            shard_iterator_response = kinesis_client.get_shard_iterator(
-                StreamName = stream,
-                ShardId = shard_id,
-                ShardIteratorType = iterator_type
-            )
+            stream = self.section['stream']
+            iterator_type = self.section['iterator_type']
 
-            shard_iterator = shard_iterator_response['ShardIterator']
-            response = kinesis_client.get_records(ShardIterator=shard_iterator )
-            records = response['Records']
-            return records
+            response = kinesis_client.describe_stream(StreamName= stream,Region= self.region)
+            shards = response['StreamDescription']['Shards']
+            shard_ids = [shard['ShardId'] for shard in shards]
+            for shard_id in shard_ids:
+                shard_iterator_response = kinesis_client.get_shard_iterator(
+                    StreamName = stream,
+                    ShardId = shard_id,
+                    ShardIteratorType = iterator_type
+                )
+
+                shard_iterator = shard_iterator_response['ShardIterator']
+                response = kinesis_client.get_records(ShardIterator=shard_iterator )
+                records = response['Records']
+                return records
         
         except NoCredentialsError as e:
             self.logger.error(e,exc_info=True)
             return None
-        except PartialCredentials as e :
+        except PartialCredentialsError as e :
             self.logger.error(e,exc_info=True)
             return None
         except Exception as e:
-            self.logger(e,exc_info=True)
+            self.logger.error(e,exc_info=True)
             return None
 
         
