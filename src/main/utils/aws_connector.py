@@ -79,8 +79,7 @@ class AWSConnector():
             self.logger.info(f'Created kinesis client :{kinesis_client}')
             stream = self.section['stream']
             shard_count = int(self.section['shard_count'])
-            partition_key = self.section['partition_key']
-            self.logger.info(f'stream:{stream},shard_count:{shard_count} partition_key:{partition_key}')
+            self.logger.info(f'stream:{stream},shard_count:{shard_count}')
 
             if self.get_kinesis_stream(kinesis_client,stream,shard_count):
                 response = kinesis_client.put_records(

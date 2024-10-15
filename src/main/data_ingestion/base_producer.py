@@ -17,6 +17,7 @@ class BaseProducer(BaseComponent):
         load_dotenv()
         self.api_key = os.getenv('API_KEY')
         self.api_endpoint = self.config.get('api_endpoint')    
+        self.partition_key = self.config.get('partition_key')    
    
     def _request_response(self)-> Dict:
         try:
