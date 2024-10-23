@@ -40,4 +40,5 @@ class BaseProducer(BaseComponent):
     def run(self):
        self.initialize()
        dataset = self._request_response()
+       
        self.write_to_stream(dataset)
