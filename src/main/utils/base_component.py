@@ -1,5 +1,5 @@
 import logging
-from configparser import ConfigParser
+from configparser import ConfigParser,ExtendedInterpolation
 from abc import ABC,abstractmethod
 from dataclasses import dataclass    
 from typing import Dict
@@ -19,7 +19,7 @@ class BaseComponent(ABC):
         self.logger.addHandler(handler)
     
     def read_config(self,config_file:str,section_name:str) -> Dict :
-        config = ConfigParser()
+        config = ConfigParser(interpolation=ExtendedInterpolation())
         config.read(config_file)
         try:
             return dict(config[section_name])

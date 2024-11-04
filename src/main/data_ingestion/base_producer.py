@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 from typing import Dict
 import json
+import time
 
 
 class BaseProducer(BaseComponent):
@@ -38,7 +39,17 @@ class BaseProducer(BaseComponent):
         self.aws_connector.write_to_kinesis_stream(records)
 
     def run(self):
-       self.initialize()
-       dataset = self._request_response()
-       
-       self.write_to_stream(dataset)
+        try:
+            self.initialize()
+            counter = 0
+            while counter < 2:
+                dataset = self._request_response()
+                self.write_to_stream(dataset)
+                time.sleep(2)
+                counter += 1
+            self.aws_connector.delete_streams()
+            self.logger.info('API processing complete. Exiting script')
+        except Exception as e:
+            self.logger.error(e,exc_info=True)
+      
+    
