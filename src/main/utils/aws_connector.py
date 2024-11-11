@@ -2,6 +2,7 @@ import sys
 import boto3
 import json
 import botocore
+from datetime import datetime
 from botocore.exceptions import NoCredentialsError,PartialCredentialsError
 from botocore.exceptions import ClientError
 
@@ -12,12 +13,22 @@ class AWSConnector():
         self.section = aws_section
         self.region = self.section['region']
         self.account_id = self.get_account_id()
+        self.flag_setup_resource = 0
+        self.kinesis_stream_start_time = datetime.now()
         self.retry_max_attempts = self.section['retry_max_attempts']
         self.retry_delay_seconds = self.section['retry_delay_seconds']
+        self.cloudwatch_log_group = self.section['cloudwatch_log_group']
+        self.cloudwatch_log_stream = self.section['cloudwatch_log_stream']
         self.session = boto3.Session()
 
     def get_sts_client(self):
         return boto3.client('sts')
+
+    def get_logs_client(self):
+        return boto3.client('logs')
+
+    def get_cloudwatch_client(self):
+        return boto3.client('cloudwatch')
 
     def get_s3_client(self):
         return self.session.client('s3')
@@ -88,6 +99,7 @@ class AWSConnector():
 
     def create_kinesis_stream(self,kinesis_client,stream,shard_count,kinesis_delay,kinesis_max_attempts):
         try:
+            self.kinesis_stream_start_time = datetime.now()
             kinesis_client.create_stream(
                 StreamName = stream,
                 ShardCount = shard_count
@@ -107,7 +119,7 @@ class AWSConnector():
             return True
         except ClientError as e:
             self.logger.error(e,exc_info=True)
-            return None
+            raise
 
     def get_s3_bucket_ARN(self,bucket):
         try:
@@ -255,8 +267,28 @@ class AWSConnector():
         except Exception as e:
             self.logger.error(f'Unable to attach policies for {firehose_role}: {e}',exc_info=True)
             return None
+    
+    def create_cloudwatch_log_group(self,log_client):
+        try:
+            log_client.create_log_group(logGroupName=self.cloudwatch_log_group)
+        except log_client.exceptions.ResourceAlreadyExistsException:
+            self.logger.info(f'Log group : {self.cloudwatch_log_group} already exists')
+            return True
+        except Exception as e:
+            self.logger.error(e,exc_info=True)
+            raise
+    
+    def create_cloudwatch_log_stream(self,log_client):
+        try:
+            log_client.create_log_stream(logGroupName=self.cloudwatch_log_group,logStreamName=self.cloudwatch_log_stream)
+        except log_client.exceptions.ResourceAlreadyExistsException:
+            self.logger.info(f'Log stream : {self.cloudwatch_log_stream}  in group {self.cloudwatch_log_group} already exists')
+            return True
+        except Exception as e:
+            self.logger.error(e,exc_info=True)
+            raise
 
-    def create_kinesis_firehose(self,firehose_client,firehose_stream,firehose_role,glue_database,glue_table,bucket_ARN,destination_bucket_prefix,kinesis_stream_ARN):
+    def create_kinesis_firehose(self,firehose_client,firehose_stream,firehose_role,glue_database,glue_table,bucket_ARN,kinesis_stream_ARN):
         try:
             iam_client = self.get_iam_client()
             role_ARN = self.get_role_ARN(iam_client,firehose_role)
@@ -268,7 +300,6 @@ class AWSConnector():
             self.logger.info(f'Firehose stream {firehose_stream} not found. Proceeding to create')
         except Exception as e:
             self.logger.error(e,exc_info=True)
-            
 
         try:
             firehose_client.create_delivery_stream(
@@ -281,10 +312,16 @@ class AWSConnector():
             ExtendedS3DestinationConfiguration={
                 'BucketARN': bucket_ARN,
                 'RoleARN': role_ARN,
-                'Prefix': destination_bucket_prefix,
+                'Prefix': self.stream_s3_prefix,
+                'ErrorOutputPrefix':'error=!{firehose:error-output-type}/!{timestamp:yyyy/MM/dd}',
                 'BufferingHints': {
                     'SizeInMBs': 64,
-                    'IntervalInSeconds': 300
+                    'IntervalInSeconds': 30
+                },
+                'CloudWatchLoggingOptions': {
+                'Enabled': True,
+                'LogGroupName': self.cloudwatch_log_group,
+                'LogStreamName': self.cloudwatch_log_stream
                 },
                 'S3BackupMode': 'Disabled',
                 'DataFormatConversionConfiguration': {
@@ -315,8 +352,30 @@ class AWSConnector():
             return True
         except Exception as e:
             self.logger.error(e,exc_info=True)
+            raise
     
-
+    def check_for_data_persistance(self,cloudwatch_client,s3_client,firehose_stream):
+        while True:
+            firehose_metrics = cloudwatch_client.get_metric_statistics(
+                Namespace='AWS/KinesisFirehose',
+                MetricName='IncomingBytes',
+                Dimensions=[
+                {
+                'Name': 'DeliveryStreamName',
+                'Value': firehose_stream
+                }
+                ],
+                StartTime=self.kinesis_stream_start_time,
+                EndTime=datetime.now(),
+                Period = 60,
+                Statistics=['Sum'],
+                Unit='Bytes'
+            )
+            #incoming_bytes = firehose_metrics['IncomingBytes']
+            #s3_delivery = firehose_metrics['DeliveryToS3.Success']
+            print(firehose_metrics)
+            break
+        return True
     
     def delete_kinesis_stream(self,kinesis_client,stream,kinesis_delay,kinesis_max_attempts):
         try:
@@ -359,8 +418,8 @@ class AWSConnector():
         except Exception as e:
             self.logger.error(e,exc_info=True)
             sys.exit(1)
-               
-    def write_to_kinesis_stream(self,data):
+    
+    def setup_resources(self):
         try:
             kinesis_stream = self.section['kinesis_stream']
             firehose_stream = self.section['firehose_stream']
@@ -370,18 +429,19 @@ class AWSConnector():
             glue_kinesis_table = self.section['glue_kinesis_table']
             firehose_s3_bucket = self.section['firehose_s3_bucket']
             firehose_s3_prefix = self.section['firehose_s3_prefix']
+            self.stream_s3_prefix = firehose_s3_prefix+'/!{timestamp:yyyy/MM/dd}'
             shard_count = int(self.section['shard_count'])
             retry_delay=int(self.section['retry_delay_seconds'])
             retry_max_attempts=int(self.section['retry_max_attempts'])
-
             kinesis_client = self.get_kinesis_client()
             glue_client = self.get_glue_client()
             firehose_client = self.get_firehose_client()
+            log_client = self.get_logs_client()
 
             self.logger.info(f'glue_kinesis_database:{glue_kinesis_database},glue_kinesis_table:{glue_kinesis_table}')
 
             self.create_glue_table(glue_client,glue_kinesis_database,glue_kinesis_table)
-            self.create_kinesis_stream(kinesis_client,kinesis_stream,shard_count,retry_delay,retry_max_attempts)
+            kinesis_start_tiem = self.create_kinesis_stream(kinesis_client,kinesis_stream,shard_count,retry_delay,retry_max_attempts)
 
             kinesis_stream_ARN = self.get_kinesis_stream_ARN(kinesis_client,kinesis_stream)
             bucket_ARN = self.get_s3_bucket_ARN(firehose_s3_bucket)
@@ -389,48 +449,72 @@ class AWSConnector():
             glue_database_ARN = self.get_glue_database_ARN(glue_kinesis_database)
             firehose_ARN = self.get_kinesis_firehose_ARN(firehose_stream)
             catalog_ARN = self.get_glue_catalog_ARN()
+            self.create_cloudwatch_log_group(log_client)
+            self.create_cloudwatch_log_stream(log_client)
 
             role_response = self.verify_roles_policies(firehose_role,kinesis_stream_ARN,bucket_ARN,glue_table_ARN,glue_database_ARN,firehose_ARN,catalog_ARN)
             
             if role_response:
-                firehouse_reponse = self.create_kinesis_firehose(firehose_client,firehose_stream,firehose_role,glue_kinesis_database,glue_kinesis_table,bucket_ARN,firehose_s3_prefix,kinesis_stream_ARN)
-                if firehouse_reponse and kinesis_stream:
-                    response = kinesis_client.put_records(
-                                    StreamName = kinesis_stream,
-                                    Records = data
-                                )
-                    self.logger.info(f'Data written to stream {kinesis_stream} :{response}')
+                firehouse_reponse = self.create_kinesis_firehose(firehose_client,firehose_stream,firehose_role,glue_kinesis_database,glue_kinesis_table,bucket_ARN,kinesis_stream_ARN)
+                if firehouse_reponse :
+                    return True
                 else:
                     self.logger.info(f'unable to create kinesis firehose {firehose_stream}')
             else:
                 self.logger.error(f'Policies could not be attached to role {firehose_role}')
-                sys.exit(-1)
+                sys.exit(1)
         except NoCredentialsError as e:
             self.logger.error(e,exc_info=True)
-            return None
+            sys.exit(1)
         except PartialCredentialsError as e :
             self.logger.error(e,exc_info=True)
-            return None
+            sys.exit(1)
         except Exception as e:
             self.logger.error(e,exc_info=True)
-            return None 
+            sys.exit(1)
+
+    def write_to_kinesis_stream(self,data):
+        try:
+            kinesis_stream = self.section['kinesis_stream']
+            kinesis_client = self.get_kinesis_client()
+            if not self.flag_setup_resource:
+                self.setup_resources()
+                self.flag_setup_resource = 1
+
+            if self.flag_setup_resource:
+                response = kinesis_client.put_records(
+                            StreamName = kinesis_stream,
+                            Records = data
+                                )
+                self.logger.info(f'Data written to stream {kinesis_stream} :{response}')
+        except NoCredentialsError as e:
+            self.logger.error(e,exc_info=True)
+            sys.exit(1)
+        except PartialCredentialsError as e :
+            self.logger.error(e,exc_info=True)
+            sys.exit(1)
+        except Exception as e:
+            self.logger.error(e,exc_info=True)
+            sys.exit(1)
     
     def delete_streams(self):
         try:
             kinesis_client = self.get_kinesis_client()
             firehose_client = self.get_firehose_client()
+            s3_client = self.get_s3_client()
+            cloudwatch_client = self.get_cloudwatch_client()
             kinesis_stream = self.section['kinesis_stream']
             firehose_stream = self.section['firehose_stream']
             retry_delay=int(self.section['retry_delay_seconds'])
             retry_max_attempts=int(self.section['retry_max_attempts'])
-
-            kinesis_reponse = self.delete_kinesis_stream(kinesis_client,kinesis_stream,retry_delay,retry_max_attempts)
-            firehose_reponse = self.delete_firehose_stream(firehose_client,firehose_stream,retry_delay,retry_max_attempts)
-            if kinesis_reponse and firehose_reponse:
-                self.logger.info(f'Deleted kinesis stream:{kinesis_stream} and firehose stream:{firehose_stream}')
+            data_persisted = self.check_for_data_persistance(cloudwatch_client,s3_client,firehose_stream)
+            if data_persisted :
+                kinesis_reponse = self.delete_kinesis_stream(kinesis_client,kinesis_stream,retry_delay,retry_max_attempts)
+                firehose_reponse = self.delete_firehose_stream(firehose_client,firehose_stream,retry_delay,retry_max_attempts)
+                if kinesis_reponse and firehose_reponse:
+                    self.logger.info(f'Deleted kinesis stream:{kinesis_stream} and firehose stream:{firehose_stream}')
         except Exception as e:
             self.logger.error(e,exc_info=True)
-
 
     def read_from_kinesis_stream(self,stream,shard_id,iterator_type='LATEST'):
         try:
@@ -483,6 +567,9 @@ class AWSConnector():
             self.logger.error(e,exc_info=True)
             return None
     
+    def get_s3_bucket_prefix_count(self,bucket,prefix):
+        pass
+    
     def write_to_s3(self,bucket,prefix,key,data):
         try:
             s3_client =  self.get_s3_client()
@@ -498,6 +585,9 @@ class AWSConnector():
         except Exception as e:
             self.logger.error(e,exc_info=True)
             return None
+    
+    def create_emr_cluster(self,emr_cluster_name):
+        pass
     
 
         

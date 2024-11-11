@@ -42,10 +42,10 @@ class BaseProducer(BaseComponent):
         try:
             self.initialize()
             counter = 0
-            while counter < 2:
+            while counter < 10:
                 dataset = self._request_response()
                 self.write_to_stream(dataset)
-                time.sleep(2)
+                time.sleep(30)
                 counter += 1
             self.aws_connector.delete_streams()
             self.logger.info('API processing complete. Exiting script')
